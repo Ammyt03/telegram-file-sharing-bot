@@ -1,6 +1,7 @@
 import requests
 import logging
 from typing import Optional, Dict, Any
+import urllib.parse
 
 logger = logging.getLogger(__name__)
 
@@ -17,20 +18,23 @@ class LinkShortifyAPI:
     def create_short_link(self, original_url: str, alias: str = None, ad_type: str = None) -> Optional[Dict[str, Any]]:
         """Create a shortened link using the correct LinkShortify API format"""
         try:
-            # Use the correct API format from the screenshot
-            import urllib.parse
-            encoded_url = urllib.parse.quote(original_url, safe=':/?#[]@!$&\'()*+,;=')
-            api_url = f"https://linkshortify.com/api?api={self.api_key}&url={encoded_url}"
+            # Use the correct API format with params
+            params = {
+                "api": self.api_key,
+                "url": original_url
+            }
             
             if alias:
-                api_url += f"&alias={alias}"
-            
-            # Add ad type parameter for ads verification
+                params["alias"] = alias
             if ad_type:
-                api_url += f"&type={ad_type}"
-            
-            logger.info(f"Calling LinkShortify API: {api_url}")
-            response = requests.get(api_url, timeout=10)
+                params["type"] = ad_type
+                
+            logger.info(f"Calling LinkShortify API with params: {params}")
+            response = requests.get(
+                "https://linkshortify.com/api",
+                params=params,
+                timeout=10
+            )
             
             if response.status_code == 200:
                 response_data = response.json()
@@ -76,24 +80,20 @@ class LinkShortifyAPI:
     def create_ads_verification_link(self, telegram_deep_link: str) -> Optional[str]:
         """Create an ads verification link that redirects to web verification endpoint"""
         try:
-            # Extract token data from telegram link
-            if "?start=token_" in telegram_deep_link:
-                token_part = telegram_deep_link.split("?start=token_")[1]
-                
-                # Create web verification URL instead of direct telegram link
-                import os
-                # Use Render.com URL or fallback to localhost for development
-                base_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://telegram-file-sharing-bot.onrender.com')
-                web_verify_url = f"{base_url}/verify-token?token={token_part}"
-                
-                # Create ads link to web verification URL
-                result = self.create_short_link(web_verify_url, ad_type="ads")
-                
-                if result and result.get('status') == 'success':
-                    shortened_url = result.get('shortenedUrl')
-                    if shortened_url:
-                        logger.info(f"Successfully created LinkShortify ads link: {shortened_url}")
-                        return shortened_url
+            # Create web verification URL instead of direct telegram link
+            import os
+            # Use Render.com URL or fallback to localhost for development
+            base_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://telegram-file-sharing-bot.onrender.com')
+            web_verify_url = f"{base_url}/verify-token?url={urllib.parse.quote(telegram_deep_link)}"
+            
+            # Create ads link to web verification URL
+            result = self.create_short_link(web_verify_url, ad_type="ads")
+            
+            if result and result.get('status') == 'success':
+                shortened_url = result.get('shortenedUrl')
+                if shortened_url:
+                    logger.info(f"Successfully created LinkShortify ads link: {shortened_url}")
+                    return shortened_url
             
             # Fallback to direct telegram link
             result = self.create_short_link(telegram_deep_link, ad_type="ads")
