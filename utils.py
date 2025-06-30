@@ -69,11 +69,10 @@ def decode_token_data(encoded_data: str) -> Optional[dict]:
                 'user_id': parts[1],
                 'timestamp': parts[2]
             }
+            return token_data
         else:
             # Fallback to old JSON format
-            token_data = json.loads(decoded)
-        
-        return token_data
+            return json.loads(decoded)
     except Exception:
         return None
 
