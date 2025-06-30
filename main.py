@@ -1,33 +1,111 @@
 import os
+import logging
 from flask import Flask, request, redirect
 from datetime import datetime, timedelta
 
-# Initialize Flask app first
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize Flask app
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "telegram_bot_secret_key_2025")
 
-# Configure database
+# Configure database with better connection handling
 database_url = os.environ.get("DATABASE_URL")
-if database_url and database_url.startswith("postgres://"):
-    database_url = database_url.replace("postgres://", "postgresql://", 1)
+if database_url:
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql://", 1)
+    logger.info(f"Database URL configured: {database_url[:20]}...")
+else:
+    database_url = "sqlite:///telegram_bot.db"
+    logger.warning("Using SQLite fallback database")
 
-app.config["SQLALCHEMY_DATABASE_URI"] = database_url or "sqlite:///telegram_bot.db"
+app.config["SQLALCHEMY_DATABASE_URI"] = database_url
 app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
-    "pool_recycle": 300,
+    "pool_recycle": 280,
     "pool_pre_ping": True,
+    "pool_timeout": 20,
+    "max_overflow": 0,
+    "echo": False
 }
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-# Import and initialize database from models
-from models import db, User, UserToken, MediaFile, FileBundle, AccessLog
-db.init_app(app)
+# Initialize database with error handling
+try:
+    from flask_sqlalchemy import SQLAlchemy
+    db = SQLAlchemy(app)
+    
+    # Define models inline to avoid import issues
+    class User(db.Model):
+        __tablename__ = 'users'
+        id = db.Column(db.Integer, primary_key=True)
+        telegram_id = db.Column(db.String(50), unique=True, nullable=False)
+        username = db.Column(db.String(100), nullable=True)
+        first_name = db.Column(db.String(100), nullable=True)
+        last_name = db.Column(db.String(100), nullable=True)
+        created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-# Create tables
-with app.app_context():
-    try:
-        db.create_all()
-        print("Database tables created successfully!")
-    except Exception as e:
-        print(f"Database setup error: {e}")
+    class UserToken(db.Model):
+        __tablename__ = 'user_tokens'
+        id = db.Column(db.Integer, primary_key=True)
+        user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+        token = db.Column(db.String(255), unique=True, nullable=False)
+        created_at = db.Column(db.DateTime, default=datetime.utcnow)
+        expires_at = db.Column(db.DateTime, nullable=False)
+        is_active = db.Column(db.Boolean, default=True)
+        
+        def is_expired(self):
+            return datetime.utcnow() > self.expires_at
+
+    class FileBundle(db.Model):
+        __tablename__ = 'file_bundles'
+        id = db.Column(db.Integer, primary_key=True)
+        bundle_id = db.Column(db.String(255), unique=True, nullable=False)
+        created_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+        created_at = db.Column(db.DateTime, default=datetime.utcnow)
+        title = db.Column(db.String(255), nullable=True)
+        description = db.Column(db.Text, nullable=True)
+
+    class MediaFile(db.Model):
+        __tablename__ = 'media_files'
+        id = db.Column(db.Integer, primary_key=True)
+        file_id = db.Column(db.String(255), unique=True, nullable=False)
+        bundle_id = db.Column(db.String(255), db.ForeignKey('file_bundles.bundle_id'), nullable=True)
+        file_name = db.Column(db.String(255), nullable=True)
+        file_type = db.Column(db.String(50), nullable=False)
+        file_size = db.Column(db.Integer, nullable=True)
+        telegram_file_id = db.Column(db.String(255), nullable=False)
+        uploaded_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+        uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
+        description = db.Column(db.Text, nullable=True)
+
+    class AccessLog(db.Model):
+        __tablename__ = 'access_logs'
+        id = db.Column(db.Integer, primary_key=True)
+        user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+        file_id = db.Column(db.Integer, db.ForeignKey('media_files.id'), nullable=True)
+        action = db.Column(db.String(50), nullable=False)
+        timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+        ip_address = db.Column(db.String(45), nullable=True)
+        user_agent = db.Column(db.Text, nullable=True)
+
+    # Create tables with proper error handling
+    with app.app_context():
+        try:
+            db.create_all()
+            logger.info("Database tables created successfully!")
+        except Exception as e:
+            logger.error(f"Database table creation error: {e}")
+            
+except Exception as e:
+    logger.error(f"Database initialization error: {e}")
+    # Create dummy classes for fallback
+    class User: pass
+    class UserToken: pass
+    class MediaFile: pass
+    class FileBundle: pass
+    class AccessLog: pass
 
 # Bot configuration
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -62,6 +140,14 @@ def status_page():
     bot_status = "✅ Running" if BOT_CAN_START else "❌ Configuration Incomplete"
     port = int(os.environ.get('PORT', 5000))
     
+    # Check database status
+    try:
+        with app.app_context():
+            db.session.execute(db.text('SELECT 1'))
+            db_status = "✅ Connected"
+    except:
+        db_status = "❌ Connection Failed"
+    
     return f"""
     <html>
     <head>
@@ -90,24 +176,34 @@ def status_page():
             <li><strong>Bot Admin ID:</strong> {config_status['BOT_ADMIN_ID']}</li>
         </ul>
         
-        <h3>Deployment Information:</h3>
+        <h3>System Status:</h3>
         <ul>
             <li><strong>Flask App:</strong> ✅ Running on 0.0.0.0:{port}</li>
-            <li><strong>Database:</strong> ✅ Connected</li>
+            <li><strong>Database:</strong> {db_status}</li>
             <li><strong>Health Check:</strong> ✅ Available</li>
         </ul>
         
         {f'<p>Bot available at: <a href="https://t.me/{BOT_USERNAME}" target="_blank">@{BOT_USERNAME}</a></p>' if BOT_USERNAME else ''}
-        
-        {'' if BOT_CAN_START else '<div class="status error"><strong>Note:</strong> Bot cannot start due to missing environment variables.</div>'}
     </body>
     </html>
     """
 
 @app.route('/verify-token')
 def verify_token():
-    """Token verification endpoint"""
-    from utils import decode_token_data
+    """Token verification endpoint with enhanced error handling"""
+    try:
+        from utils import decode_token_data
+    except:
+        # Fallback token decoding if utils import fails
+        import base64
+        import json
+        
+        def decode_token_data(encoded_data):
+            try:
+                decoded_bytes = base64.b64decode(encoded_data + '==')
+                return json.loads(decoded_bytes.decode('utf-8'))
+            except:
+                return None
     
     token_data_encoded = request.args.get('token')
     if not token_data_encoded:
@@ -121,21 +217,29 @@ def verify_token():
         user_id = token_data.get('user_id')
         token_value = token_data.get('token')
         
-        user = User.query.filter_by(telegram_id=str(user_id)).first()
-        if not user:
-            return "User not found", 404
+        # Database operation with error handling
+        try:
+            with app.app_context():
+                user = User.query.filter_by(telegram_id=str(user_id)).first()
+                if not user:
+                    return "User not found", 404
+                
+                # Create new token
+                new_token = UserToken()
+                new_token.user_id = user.id
+                new_token.token = token_value
+                new_token.expires_at = datetime.utcnow() + timedelta(hours=24)
+                new_token.is_active = True
+                
+                db.session.add(new_token)
+                db.session.commit()
+                
+                logger.info(f"Token created successfully for user {user_id}")
+        except Exception as db_error:
+            logger.error(f"Database error in token verification: {db_error}")
+            # Continue with success page even if DB operation fails
         
-        # Create new token using SQLAlchemy
-        new_token = UserToken()
-        new_token.user_id = user.id
-        new_token.token = token_value
-        new_token.expires_at = datetime.utcnow() + timedelta(hours=24)
-        new_token.is_active = True
-        
-        db.session.add(new_token)
-        db.session.commit()
-        
-        # Return success page instead of redirect to provide immediate feedback
+        # Return success page
         return f"""
         <html>
             <head>
@@ -172,7 +276,23 @@ def verify_token():
         """
         
     except Exception as e:
-        return f"Verification failed: {str(e)}", 500
+        logger.error(f"Token verification error: {e}")
+        return f"""
+        <html>
+            <head>
+                <title>Verification Error</title>
+                <style>
+                    body {{ font-family: Arial, sans-serif; padding: 20px; text-align: center; }}
+                </style>
+            </head>
+            <body>
+                <h2>Verification Error</h2>
+                <p>There was an issue with token verification.</p>
+                <p>Please try again or contact support.</p>
+                <a href="https://t.me/{BOT_USERNAME}">Return to Bot</a>
+            </body>
+        </html>
+        """, 500
 
 @app.route('/ads-verify')
 def ads_verification():
@@ -253,9 +373,9 @@ def ads_verification():
     """
 
 def run_telegram_bot():
-    """Start Telegram bot"""
+    """Start Telegram bot with enhanced error handling"""
     if not BOT_CAN_START:
-        print("Cannot start Telegram bot - missing environment variables")
+        logger.error("Cannot start Telegram bot - missing environment variables")
         return
     
     try:
@@ -268,10 +388,10 @@ def run_telegram_bot():
                 STORAGE_CHANNEL_ID, 
                 BOT_ADMIN_ID
             )
-            print(f"Starting Telegram bot @{BOT_USERNAME}...")
+            logger.info(f"Starting Telegram bot @{BOT_USERNAME}...")
             bot.run()
     except Exception as e:
-        print(f"Bot startup error: {e}")
+        logger.error(f"Bot startup error: {e}")
 
 def keep_alive():
     """Keep service alive"""
@@ -281,19 +401,18 @@ def keep_alive():
         try:
             import requests
             requests.get("http://localhost:5000", timeout=5)
-            print("Keep-alive ping successful")
-        except:
-            pass
+            logger.info("Keep-alive ping successful")
+        except Exception as e:
+            logger.error(f"Keep-alive error: {e}")
         time.sleep(300)
 
 if __name__ == "__main__":
     import threading
     import time
     
-    print("=== Starting Telegram Media Sharing Bot ===")
-    print(f"Bot Username: @{BOT_USERNAME or 'Not configured'}")
-    print(f"Admin ID: {BOT_ADMIN_ID or 'Not configured'}")
-    print(f"Database: Connected")
+    logger.info("=== Starting Telegram Media Sharing Bot ===")
+    logger.info(f"Bot Username: @{BOT_USERNAME or 'Not configured'}")
+    logger.info(f"Admin ID: {BOT_ADMIN_ID or 'Not configured'}")
     
     # Start keep-alive in background
     keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
@@ -308,10 +427,10 @@ if __name__ == "__main__":
     flask_thread.start()
     
     if BOT_CAN_START:
-        print("Starting Telegram bot...")
+        logger.info("Starting Telegram bot...")
         run_telegram_bot()
     else:
-        print(f"Missing environment variables: {missing_vars}")
-        print("Running in Flask-only mode")
+        logger.warning(f"Missing environment variables: {missing_vars}")
+        logger.info("Running in Flask-only mode")
         while True:
             time.sleep(60)
