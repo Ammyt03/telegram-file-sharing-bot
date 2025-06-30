@@ -81,7 +81,9 @@ class LinkShortifyAPI:
                 token_part = telegram_deep_link.split("?start=token_")[1]
                 
                 # Create web verification URL instead of direct telegram link
-                base_url = "https://1067244d-244f-49df-a2c2-c3d8e117e7c6-00-i0a733k4ar2i.janeway.replit.dev"
+                import os
+                # Use Render.com URL or fallback to localhost for development
+                base_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://telegram-file-sharing-bot.onrender.com')
                 web_verify_url = f"{base_url}/verify-token?token={token_part}"
                 
                 # Create ads link to web verification URL
@@ -115,15 +117,11 @@ class LinkShortifyAPI:
         import os
         encoded_link = urllib.parse.quote(telegram_deep_link, safe='')
         
-        # Get the proper domain from Replit environment
-        repl_id = os.environ.get('REPL_ID', '1067244d-244f-49df-a2c2-c3d8e117e7c6')
-        repl_owner = os.environ.get('REPL_OWNER', '003ajeebname')
+        # Use Render.com URL
+        base_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://telegram-file-sharing-bot.onrender.com')
         
-        # Construct proper Replit app domain
-        domain = f"https://{repl_id}.{repl_owner}.replit.app"
-        
-        # Log the constructed domain for debugging
-        logger.info(f"Creating fallback ads link with domain: {domain}")
+        # Log the constructed domain for debugging  
+        logger.info(f"Creating fallback ads link with domain: {base_url}")
         
         # Use our Flask server to create ads verification page
-        return f"{domain}/ads-verify?redirect={encoded_link}"
+        return f"{base_url}/ads-verify?redirect={encoded_link}"
