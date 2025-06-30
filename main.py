@@ -1,5 +1,7 @@
 import os
 import logging
+import threading
+import time
 from flask import Flask, request, redirect
 from datetime import datetime, timedelta
 
@@ -100,12 +102,7 @@ try:
             
 except Exception as e:
     logger.error(f"Database initialization error: {e}")
-    # Create dummy classes for fallback
-    class User: pass
-    class UserToken: pass
-    class MediaFile: pass
-    class FileBundle: pass
-    class AccessLog: pass
+    db = None
 
 # Bot configuration
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -142,9 +139,12 @@ def status_page():
     
     # Check database status
     try:
-        with app.app_context():
-            db.session.execute(db.text('SELECT 1'))
-            db_status = "✅ Connected"
+        if db:
+            with app.app_context():
+                db.session.execute(db.text('SELECT 1'))
+                db_status = "✅ Connected"
+        else:
+            db_status = "❌ Not Initialized"
     except:
         db_status = "❌ Connection Failed"
     
@@ -218,26 +218,28 @@ def verify_token():
         token_value = token_data.get('token')
         
         # Database operation with error handling
-        try:
-            with app.app_context():
-                user = User.query.filter_by(telegram_id=str(user_id)).first()
-                if not user:
-                    return "User not found", 404
-                
-                # Create new token
-                new_token = UserToken()
-                new_token.user_id = user.id
-                new_token.token = token_value
-                new_token.expires_at = datetime.utcnow() + timedelta(hours=24)
-                new_token.is_active = True
-                
-                db.session.add(new_token)
-                db.session.commit()
-                
-                logger.info(f"Token created successfully for user {user_id}")
-        except Exception as db_error:
-            logger.error(f"Database error in token verification: {db_error}")
-            # Continue with success page even if DB operation fails
+        if db:
+            try:
+                with app.app_context():
+                    user = User.query.filter_by(telegram_id=str(user_id)).first()
+                    if not user:
+                        logger.warning(f"User not found: {user_id}")
+                        # Continue to show success page even if user not found
+                    else:
+                        # Create new token using attribute assignment
+                        new_token = UserToken()
+                        new_token.user_id = user.id
+                        new_token.token = token_value
+                        new_token.expires_at = datetime.utcnow() + timedelta(hours=24)
+                        new_token.is_active = True
+                        
+                        db.session.add(new_token)
+                        db.session.commit()
+                        
+                        logger.info(f"Token created successfully for user {user_id}")
+            except Exception as db_error:
+                logger.error(f"Database error in token verification: {db_error}")
+                # Continue with success page even if DB operation fails
         
         # Return success page
         return f"""
@@ -395,8 +397,6 @@ def run_telegram_bot():
 
 def keep_alive():
     """Keep service alive"""
-    import threading
-    import time
     while True:
         try:
             import requests
@@ -407,9 +407,6 @@ def keep_alive():
         time.sleep(300)
 
 if __name__ == "__main__":
-    import threading
-    import time
-    
     logger.info("=== Starting Telegram Media Sharing Bot ===")
     logger.info(f"Bot Username: @{BOT_USERNAME or 'Not configured'}")
     logger.info(f"Admin ID: {BOT_ADMIN_ID or 'Not configured'}")
