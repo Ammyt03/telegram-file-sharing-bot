@@ -1,20 +1,14 @@
 import os
-from flask import Flask
+from flask import Flask, request, redirect
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.orm import DeclarativeBase
-from models import db
-from bot_bundle import TelegramBotBundle
 import threading
-from keep_alive import start_keep_alive
+import time
+from datetime import datetime, timedelta
 
-
-class Base(DeclarativeBase):
-    pass
-
-
-# Create Flask app for database management
+# Initialize Flask app
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "a_secret_key_for_telegram_bot")
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "telegram_bot_secret_key_2025")
 
 # Configure database
 database_url = os.environ.get("DATABASE_URL")
@@ -28,21 +22,22 @@ app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
 }
 
 # Initialize database
-db.init_app(app)
+db = SQLAlchemy(app)
+
+# Import models after db initialization
+from models import User, UserToken, MediaFile, FileBundle, AccessLog
 
 # Create tables
 with app.app_context():
-    import models  # noqa: F401
     try:
         db.create_all()
         print("Database tables created successfully!")
     except Exception as e:
-        print(f"Database tables already exist or error: {e}")
-        print("Continuing with existing database...")
+        print(f"Database setup error: {e}")
 
 # Bot configuration
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME")
+BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "").lstrip('@')
 LINKSHORTIFY_API_KEY = os.environ.get("LINKSHORTIFY_API_KEY")
 STORAGE_CHANNEL_ID = os.environ.get("STORAGE_CHANNEL_ID")
 BOT_ADMIN_ID = os.environ.get("BOT_ADMIN_ID")
@@ -57,17 +52,11 @@ required_vars = {
 }
 
 missing_vars = [var for var, value in required_vars.items() if not value]
-if missing_vars:
-    print(f"Warning: Missing required environment variables: {', '.join(missing_vars)}")
-    print("Bot functionality will be limited. Flask server will still run for health checks.")
-    BOT_CAN_START = False
-else:
-    BOT_CAN_START = True
+BOT_CAN_START = len(missing_vars) == 0
 
 @app.route('/')
 def status_page():
-    """Simple status page for the bot"""
-    # Check if environment variables are configured
+    """Status page showing bot configuration"""
     config_status = {
         "TELEGRAM_BOT_TOKEN": "✅ Configured" if BOT_TOKEN else "❌ Missing",
         "TELEGRAM_BOT_USERNAME": "✅ Configured" if BOT_USERNAME else "❌ Missing", 
@@ -76,20 +65,8 @@ def status_page():
         "BOT_ADMIN_ID": "✅ Configured" if BOT_ADMIN_ID else "❌ Missing"
     }
     
-    all_configured = all(var for var in [BOT_TOKEN, BOT_USERNAME, LINKSHORTIFY_API_KEY, STORAGE_CHANNEL_ID, BOT_ADMIN_ID])
-    bot_status = "✅ Running" if all_configured else "❌ Configuration Incomplete"
-    
-    # Deployment readiness check
+    bot_status = "✅ Running" if BOT_CAN_START else "❌ Configuration Incomplete"
     port = int(os.environ.get('PORT', 5000))
-    deployment_info = f"""
-        <h3>Deployment Information:</h3>
-        <ul>
-            <li><strong>Flask App:</strong> ✅ Running on 0.0.0.0:{port}</li>
-            <li><strong>Database:</strong> ✅ Connected ({app.config['SQLALCHEMY_DATABASE_URI'][:20]}...)</li>
-            <li><strong>Health Check:</strong> ✅ Available at / endpoint</li>
-            <li><strong>Bot Service:</strong> {bot_status}</li>
-        </ul>
-    """
     
     return f"""
     <html>
@@ -97,12 +74,19 @@ def status_page():
         <title>Telegram Bot Status</title>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body {{ font-family: Arial, sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }}
+            .status {{ padding: 10px; margin: 10px 0; border-radius: 5px; }}
+            .success {{ background-color: #d4edda; color: #155724; }}
+            .error {{ background-color: #f8d7da; color: #721c24; }}
+        </style>
     </head>
-    <body style="font-family: Arial, sans-serif; padding: 20px; max-width: 800px; margin: 0 auto;">
+    <body>
         <h1>🤖 Telegram Media Sharing Bot</h1>
-        <p><strong>Bot Status:</strong> {bot_status}</p>
-        <p><strong>Database:</strong> ✅ Connected</p>
-        <hr>
+        <div class="status {'success' if BOT_CAN_START else 'error'}">
+            <strong>Bot Status:</strong> {bot_status}
+        </div>
+        
         <h3>Configuration Status:</h3>
         <ul>
             <li><strong>Bot Token:</strong> {config_status['TELEGRAM_BOT_TOKEN']}</li>
@@ -111,31 +95,30 @@ def status_page():
             <li><strong>Storage Channel:</strong> {config_status['STORAGE_CHANNEL_ID']}</li>
             <li><strong>Bot Admin ID:</strong> {config_status['BOT_ADMIN_ID']}</li>
         </ul>
-        <hr>
-        {deployment_info}
-        <hr>
-        {f'<p>To use the bot, message <a href="https://t.me/{BOT_USERNAME}" target="_blank">@{BOT_USERNAME}</a> on Telegram</p>' if BOT_USERNAME else '<p>Bot username not configured</p>'}
-        <p><em>Features:</em> File sharing, Token-based access, Ads verification, Channel storage</p>
-        {'' if all_configured else '<p><strong>Note:</strong> Bot is not running due to missing environment variables. Please configure all required variables.</p>'}
-        <hr>
-        <p><small>Ready for deployment to Google Cloud Run, Railway, Render, or other container platforms.</small></p>
+        
+        <h3>Deployment Information:</h3>
+        <ul>
+            <li><strong>Flask App:</strong> ✅ Running on 0.0.0.0:{port}</li>
+            <li><strong>Database:</strong> ✅ Connected</li>
+            <li><strong>Health Check:</strong> ✅ Available</li>
+        </ul>
+        
+        {f'<p>Bot available at: <a href="https://t.me/{BOT_USERNAME}" target="_blank">@{BOT_USERNAME}</a></p>' if BOT_USERNAME else ''}
+        
+        {'' if BOT_CAN_START else '<div class="status error"><strong>Note:</strong> Bot cannot start due to missing environment variables.</div>'}
     </body>
     </html>
     """
 
 @app.route('/verify-token')
 def verify_token():
-    """Direct token verification endpoint"""
-    from flask import request, redirect
+    """Token verification endpoint"""
     from utils import decode_token_data
-    from models import User, UserToken
-    from datetime import datetime, timedelta
     
     token_data_encoded = request.args.get('token')
     if not token_data_encoded:
         return "Invalid verification link", 400
     
-    # Decode token data
     try:
         token_data = decode_token_data(token_data_encoded)
         if not token_data:
@@ -144,12 +127,10 @@ def verify_token():
         user_id = token_data.get('user_id')
         token_value = token_data.get('token')
         
-        # Find user
         user = User.query.filter_by(telegram_id=str(user_id)).first()
         if not user:
             return "User not found", 404
         
-        # Create new token
         new_token = UserToken(
             user_id=user.id,
             token=token_value,
@@ -160,24 +141,54 @@ def verify_token():
         db.session.add(new_token)
         db.session.commit()
         
-        # Redirect to telegram bot with success message
-        telegram_link = f"https://t.me/{BOT_USERNAME}?start=verified"
-        return redirect(telegram_link)
+        # Return success page instead of redirect to provide immediate feedback
+        return f"""
+        <html>
+            <head>
+                <title>Token Activated</title>
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <style>
+                    body {{ font-family: Arial, sans-serif; margin: 0; padding: 20px; 
+                           background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+                           min-height: 100vh; display: flex; align-items: center; justify-content: center; }}
+                    .container {{ background: white; padding: 40px; border-radius: 15px; 
+                                 text-align: center; max-width: 500px; width: 90%; }}
+                    .success-icon {{ font-size: 80px; margin: 20px 0; }}
+                    .btn {{ background: #007bff; color: white; padding: 15px 30px; border: none;
+                           border-radius: 25px; font-size: 18px; cursor: pointer; text-decoration: none;
+                           display: inline-block; margin: 10px; }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="success-icon">✅</div>
+                    <h1>Congratulations!</h1>
+                    <p><strong>Ads tokens refreshed successfully!</strong></p>
+                    <p>It will expire after 24 hours</p>
+                    <br>
+                    <p>🔓 Your token is now active</p>
+                    <p>📱 You can now access all shared files</p>
+                    
+                    <a href="https://t.me/{BOT_USERNAME}" class="btn">
+                        📱 Return to Bot
+                    </a>
+                </div>
+            </body>
+        </html>
+        """
         
     except Exception as e:
         return f"Verification failed: {str(e)}", 500
 
 @app.route('/ads-verify')
 def ads_verification():
-    """Ads verification page that redirects to Telegram bot"""
+    """Ads verification page"""
     import urllib.parse
-    from flask import request
     
     redirect_url = request.args.get('redirect', '')
     if not redirect_url:
         return "Invalid verification link", 400
     
-    # Decode the redirect URL
     try:
         decoded_redirect = urllib.parse.unquote(redirect_url)
     except:
@@ -186,98 +197,52 @@ def ads_verification():
     return f"""
     <html>
         <head>
-            <title>Ads Verification - Telegram Bot</title>
+            <title>Ads Verification</title>
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <style>
-                body {{ 
-                    font-family: Arial, sans-serif; 
-                    margin: 0; 
-                    padding: 20px; 
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    color: white;
-                    min-height: 100vh;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                }}
-                .container {{ 
-                    background: rgba(255,255,255,0.95); 
-                    padding: 40px; 
-                    border-radius: 15px; 
-                    box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-                    text-align: center;
-                    color: #333;
-                    max-width: 500px;
-                    width: 90%;
-                }}
-                .ads-box {{
-                    background: #f8f9fa;
-                    border: 2px dashed #6c757d;
-                    padding: 60px 20px;
-                    margin: 20px 0;
-                    border-radius: 10px;
-                    font-size: 18px;
-                    color: #6c757d;
-                }}
-                .btn {{
-                    background: #28a745;
-                    color: white;
-                    padding: 15px 30px;
-                    border: none;
-                    border-radius: 25px;
-                    font-size: 18px;
-                    cursor: pointer;
-                    text-decoration: none;
-                    display: inline-block;
-                    margin: 10px;
-                    transition: all 0.3s;
-                }}
-                .btn:hover {{
-                    background: #218838;
-                    transform: translateY(-2px);
-                }}
-                .timer {{
-                    font-size: 24px;
-                    font-weight: bold;
-                    color: #dc3545;
-                    margin: 20px 0;
-                }}
+                body {{ font-family: Arial, sans-serif; margin: 0; padding: 20px; 
+                       background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                       min-height: 100vh; display: flex; align-items: center; justify-content: center; }}
+                .container {{ background: white; padding: 40px; border-radius: 15px; 
+                             text-align: center; max-width: 500px; width: 90%; }}
+                .ads-box {{ background: #f8f9fa; border: 2px dashed #6c757d; 
+                           padding: 60px 20px; margin: 20px 0; border-radius: 10px; }}
+                .btn {{ background: #28a745; color: white; padding: 15px 30px; border: none;
+                       border-radius: 25px; font-size: 18px; cursor: pointer; text-decoration: none;
+                       display: inline-block; margin: 10px; }}
+                .timer {{ font-size: 24px; font-weight: bold; color: #dc3545; margin: 20px 0; }}
             </style>
         </head>
         <body>
             <div class="container">
                 <h1>🎟️ Token Verification</h1>
-                <p>Complete the verification to get 24-hour access to shared files</p>
+                <p>Complete verification to get 24-hour access to shared files</p>
                 
                 <div class="ads-box">
-                    <p>📺 Ads Content Here</p>
-                    <p>(Please wait for ads to load...)</p>
+                    <p id="ads-text">📺 Loading advertisement...</p>
                     <div class="timer" id="timer">5</div>
-                    <p>Viewing advertisement...</p>
                 </div>
                 
                 <a href="#" class="btn" id="continue-btn" style="display:none;" onclick="redirectToBot()">
                     ✅ Continue to Bot
                 </a>
-                
-                <p><small>You will be redirected to Telegram after viewing the ad</small></p>
             </div>
             
             <script>
                 let countdown = 5;
-                const timerElement = document.getElementById('timer');
+                const timerEl = document.getElementById('timer');
                 const continueBtn = document.getElementById('continue-btn');
+                const adsText = document.getElementById('ads-text');
                 
                 const timer = setInterval(() => {{
                     countdown--;
-                    timerElement.textContent = countdown;
+                    timerEl.textContent = countdown;
                     
                     if (countdown <= 0) {{
                         clearInterval(timer);
-                        timerElement.style.display = 'none';
+                        timerEl.style.display = 'none';
                         continueBtn.style.display = 'inline-block';
-                        document.querySelector('.ads-box p').textContent = '✅ Verification Complete!';
-                        document.querySelectorAll('.ads-box p')[1].textContent = 'Click continue to access files';
+                        adsText.textContent = '✅ Verification Complete!';
                     }}
                 }}, 1000);
                 
@@ -285,63 +250,69 @@ def ads_verification():
                     window.location.href = '{decoded_redirect}';
                 }}
                 
-                // Auto redirect after 8 seconds
                 setTimeout(() => {{
-                    if (countdown <= 0) {{
-                        redirectToBot();
-                    }}
+                    if (countdown <= 0) redirectToBot();
                 }}, 8000);
             </script>
         </body>
     </html>
     """
 
-def run_flask_app():
-    """Run Flask app for database operations"""
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
-
 def run_telegram_bot():
-    """Run Telegram bot"""
+    """Start Telegram bot"""
     if not BOT_CAN_START:
-        print("Cannot start Telegram bot - missing required environment variables")
+        print("Cannot start Telegram bot - missing environment variables")
         return
     
-    # Ensure all variables are strings and not None
-    if not all([BOT_TOKEN, BOT_USERNAME, LINKSHORTIFY_API_KEY, STORAGE_CHANNEL_ID, BOT_ADMIN_ID]):
-        print("Cannot start Telegram bot - one or more environment variables are None")
-        return
-    
-    with app.app_context():
-        from bot_bundle import TelegramBotBundle
-        bot = TelegramBotBundle(
-            str(BOT_TOKEN), 
-            str(BOT_USERNAME), 
-            str(LINKSHORTIFY_API_KEY), 
-            str(STORAGE_CHANNEL_ID), 
-            str(BOT_ADMIN_ID)
-        )
-        bot.run()
+    try:
+        with app.app_context():
+            from bot_bundle import TelegramBotBundle
+            bot = TelegramBotBundle(
+                BOT_TOKEN, 
+                BOT_USERNAME, 
+                LINKSHORTIFY_API_KEY, 
+                STORAGE_CHANNEL_ID, 
+                BOT_ADMIN_ID
+            )
+            print(f"Starting Telegram bot @{BOT_USERNAME}...")
+            bot.run()
+    except Exception as e:
+        print(f"Bot startup error: {e}")
+
+def keep_alive():
+    """Keep service alive"""
+    while True:
+        try:
+            import requests
+            requests.get("http://localhost:5000", timeout=5)
+            print("Keep-alive ping successful")
+        except:
+            pass
+        time.sleep(300)
 
 if __name__ == "__main__":
-    print("Starting Telegram Media Sharing Bot...")
+    print("=== Starting Telegram Media Sharing Bot ===")
     print(f"Bot Username: @{BOT_USERNAME or 'Not configured'}")
-    print(f"Database URL: {app.config['SQLALCHEMY_DATABASE_URI']}")
+    print(f"Admin ID: {BOT_ADMIN_ID or 'Not configured'}")
+    print(f"Database: Connected")
     
-    # Start keep-alive service to prevent sleeping
-    start_keep_alive()
+    # Start keep-alive in background
+    keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
+    keep_alive_thread.start()
     
-    # Start Flask app in a separate thread for database management
-    flask_thread = threading.Thread(target=run_flask_app, daemon=True)
+    # Start Flask app in background
+    port = int(os.environ.get('PORT', 5000))
+    flask_thread = threading.Thread(
+        target=lambda: app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False),
+        daemon=True
+    )
     flask_thread.start()
     
     if BOT_CAN_START:
-        # Start Telegram bot in main thread
         print("Starting Telegram bot...")
         run_telegram_bot()
     else:
-        print("Running in Flask-only mode for health checks. Set environment variables to enable bot functionality.")
-        # Keep the main thread alive to prevent the app from exiting
-        import time
+        print(f"Missing environment variables: {missing_vars}")
+        print("Running in Flask-only mode")
         while True:
-            time.sleep(60)  # Sleep for 1 minute and check again
+            time.sleep(60)
