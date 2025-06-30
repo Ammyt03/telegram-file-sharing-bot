@@ -6,10 +6,28 @@ from datetime import datetime, timedelta
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "telegram_bot_secret_key_2025")
 
+# ... existing code ...
+
 # Configure database
 database_url = os.environ.get("DATABASE_URL")
 if database_url and database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql://", 1)
+
+# Add SSL configuration for PostgreSQL
+ssl_config = {}
+if database_url and "postgresql" in database_url:
+    # For Render.com PostgreSQL
+    ssl_config = {"ssl": True}
+    
+app.config["SQLALCHEMY_DATABASE_URI"] = database_url or "sqlite:///telegram_bot.db"
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+    "pool_recycle": 300,
+    "pool_pre_ping": True,
+    "connect_args": ssl_config  # Add SSL configuration here
+}
+
+# ... rest of the code ...
+
 
 app.config["SQLALCHEMY_DATABASE_URI"] = database_url or "sqlite:///telegram_bot.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
