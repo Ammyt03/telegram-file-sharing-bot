@@ -1,12 +1,8 @@
 import os
 from flask import Flask, request, redirect
-from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy.orm import DeclarativeBase
-import threading
-import time
 from datetime import datetime, timedelta
 
-# Initialize Flask app
+# Initialize Flask app first
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "telegram_bot_secret_key_2025")
 
@@ -21,11 +17,9 @@ app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
     "pool_pre_ping": True,
 }
 
-# Initialize database
-db = SQLAlchemy(app)
-
-# Import models after db initialization
-from models import User, UserToken, MediaFile, FileBundle, AccessLog
+# Import and initialize database from models
+from models import db, User, UserToken, MediaFile, FileBundle, AccessLog
+db.init_app(app)
 
 # Create tables
 with app.app_context():
@@ -131,12 +125,12 @@ def verify_token():
         if not user:
             return "User not found", 404
         
-        new_token = UserToken(
-            user_id=user.id,
-            token=token_value,
-            expires_at=datetime.utcnow() + timedelta(hours=24),
-            is_active=True
-        )
+        # Create new token using SQLAlchemy
+        new_token = UserToken()
+        new_token.user_id = user.id
+        new_token.token = token_value
+        new_token.expires_at = datetime.utcnow() + timedelta(hours=24)
+        new_token.is_active = True
         
         db.session.add(new_token)
         db.session.commit()
@@ -281,6 +275,8 @@ def run_telegram_bot():
 
 def keep_alive():
     """Keep service alive"""
+    import threading
+    import time
     while True:
         try:
             import requests
@@ -291,6 +287,9 @@ def keep_alive():
         time.sleep(300)
 
 if __name__ == "__main__":
+    import threading
+    import time
+    
     print("=== Starting Telegram Media Sharing Bot ===")
     print(f"Bot Username: @{BOT_USERNAME or 'Not configured'}")
     print(f"Admin ID: {BOT_ADMIN_ID or 'Not configured'}")
