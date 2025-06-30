@@ -3,7 +3,7 @@ from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.orm import DeclarativeBase
 from models import db
-from bot import TelegramBot
+from bot_bundle import TelegramBotBundle
 import threading
 from keep_alive import start_keep_alive
 
